@@ -593,8 +593,8 @@ function pageProfile(){
   const p=S.profile;
   let h=`<div class="page-header"><div><div class="page-title">Your Profile</div><div class="page-sub">Used for generating dispute letters</div></div></div>`;
   h+=`<div class="card"><div class="card-title">Personal Information</div>`;
-  h+=`<div class="form-row"><div><label class="label">Full Name</label><input class="input" id="prof-name" value="${escAttr(p.full_name||p.name||'')}"/></div><div><label class="label">Email</label><input class="input" id="prof-email" value="${escAttr(p.email||'')}"/></div></div>`;
-  h+=`<div class="form-row"><div><label class="label">Phone</label><input class="input" id="prof-phone" value="${escAttr(p.phone||'')}"/></div><div><label class="label">Last 4 SSN</label><input class="input" id="prof-ssn4" value="${escAttr(p.ssn_last4||p.ssn4||'')}" maxlength="4"/></div></div>`;
+  h+=`<div class="form-row"><div><label class="label">Full Name</label><input class="input" id="prof-name" value="${escAttr(p.name||'')}"/></div><div><label class="label">Email</label><input class="input" id="prof-email" value="${escAttr(p.email||'')}"/></div></div>`;
+  h+=`<div class="form-row"><div><label class="label">Phone</label><input class="input" id="prof-phone" value="${escAttr(p.phone||'')}"/></div><div><label class="label">Last 4 SSN</label><input class="input" id="prof-ssn4" value="${escAttr(p.ssn4||'')}" maxlength="4"/></div></div>`;
   h+=`<div class="form-row"><div><label class="label">Street Address</label><input class="input" id="prof-address" value="${escAttr(p.address||'')}"/></div></div>`;
   h+=`<div class="form-row"><div><label class="label">City</label><input class="input" id="prof-city" value="${escAttr(p.city||'')}"/></div><div><label class="label">State</label><input class="input" id="prof-state" value="${escAttr(p.state||'')}" maxlength="2"/></div><div><label class="label">ZIP</label><input class="input" id="prof-zip" value="${escAttr(p.zip||'')}" maxlength="10"/></div></div>`;
   h+=`<button class="btn btn-primary mt-12" id="save-profile-btn"><i class="ti ti-check"></i> Save Profile</button></div>`;
@@ -822,10 +822,10 @@ function bindEvents(){
   if(saveProfileBtn) saveProfileBtn.onclick=async()=>{
     try{
       const fields={
-        full_name:document.getElementById('prof-name')?.value||'',
+        name:document.getElementById('prof-name')?.value||'',
         email:document.getElementById('prof-email')?.value||'',
         phone:document.getElementById('prof-phone')?.value||'',
-        ssn_last4:document.getElementById('prof-ssn4')?.value||'',
+        ssn4:document.getElementById('prof-ssn4')?.value||'',
         address:document.getElementById('prof-address')?.value||'',
         city:document.getElementById('prof-city')?.value||'',
         state:document.getElementById('prof-state')?.value||'',
@@ -1046,7 +1046,7 @@ function showLetterModal(disputeId){
     document.getElementById('ml-gen').disabled=true;
     try{
       const profileJson=JSON.stringify({
-        name:S.profile.full_name||S.profile.name||'',
+        name:S.profile.name||'',
         address:S.profile.address||'',
         city:S.profile.city||'',
         state:S.profile.state||'',
@@ -1102,7 +1102,7 @@ function showMailModal(letterId){
   const root=document.getElementById('modal-root');
   // Pre-fill from address from profile or saved addresses
   const prof=S.profile;
-  const fromName=prof.full_name||prof.name||'';
+  const fromName=prof.name||'';
   const fromStreet=prof.address||'';
   const fromCity=prof.city||'';
   const fromState=prof.state||'';

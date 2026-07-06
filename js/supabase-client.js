@@ -68,9 +68,12 @@
 
     /** Get subscription_status from profiles table */
     async getSubscriptionStatus() {
+      const user = await this.getUser();
+      if (!user) return null;
       const { data, error } = await supabase
         .from('profiles')
         .select('subscription_status')
+        .eq('user_id', user.id)
         .single();
       if (error) {
         console.error('[cai] getSubscriptionStatus error:', error.message);
@@ -174,12 +177,14 @@
     // --- PROFILES ---
     profiles: {
       async get() {
-        const { data, error } = await supabase.from('profiles').select('*').single();
+        const user = await auth.getUser();
+        const { data, error } = await supabase.from('profiles').select('*').eq('user_id', user.id).single();
         if (error) throw new Error(error.message);
         return data;
       },
       async update(fields) {
-        const { data, error } = await supabase.from('profiles').update(fields).select().single();
+        const user = await auth.getUser();
+        const { data, error } = await supabase.from('profiles').update(fields).eq('user_id', user.id).select().single();
         if (error) throw new Error(error.message);
         return data;
       }
