@@ -338,6 +338,224 @@
         const { error } = await supabase.from('mailing_addresses').delete().eq('id', id);
         if (error) throw new Error(error.message);
       }
+    },
+
+    // --- ASSETS ---
+    assets: {
+      async list(typeFilter) {
+        let query = supabase.from('assets').select('*').order('created_at', { ascending: false });
+        if (typeFilter) query = query.eq('type', typeFilter);
+        const { data, error } = await query;
+        if (error) throw new Error(error.message);
+        return data;
+      },
+      async get(id) {
+        const { data, error } = await supabase.from('assets').select('*').eq('id', id).single();
+        if (error) throw new Error(error.message);
+        return data;
+      },
+      async create(asset) {
+        const user = await auth.getUser();
+        const { data, error } = await supabase.from('assets').insert({
+          user_id: user.id, ...asset
+        }).select().single();
+        if (error) throw new Error(error.message);
+        return data;
+      },
+      async delete(id) {
+        const { error } = await supabase.from('assets').delete().eq('id', id);
+        if (error) throw new Error(error.message);
+      },
+      /** Get all round bundles for a specific dispute */
+      async listByDispute(disputeId) {
+        const { data, error } = await supabase.from('assets').select('*')
+          .eq('related_dispute_id', disputeId)
+          .eq('type', 'round_bundle')
+          .order('related_round', { ascending: true });
+        if (error) throw new Error(error.message);
+        return data;
+      }
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // STORAGE HELPERS — file upload/download for user documents
+  // ---------------------------------------------------------------------------
+  const storage = {
+    /**
+     * Upload a file to the user-documents bucket.
+     * Files are stored under the user's ID folder for RLS scoping.
+     * @param {File} file - the File object to upload
+     * @param {string} subfolder - e.g. 'identity', 'responses'
+     * @returns {Promise<{path: string, url: string}>}
+     */
+    async upload(file, subfolder) {
+      const user = await auth.getUser();
+      const ext = file.name.split('.').pop() || 'bin';
+      const fileName = `${Date.now()}-${Math.random().toString(36).slice(2,8)}.${ext}`;
+      const filePath = `${user.id}/${subfolder}/${fileName}`;
+
+      const { data, error } = await supabase.storage
+        .from('user-documents')
+        .upload(filePath, file, { contentType: file.type });
+
+      if (error) throw new Error(error.message);
+
+      // Get public/signed URL
+      const { data: urlData } = supabase.storage
+        .from('user-documents')
+        .getPublicUrl(filePath);
+
+      return { path: filePath, url: urlData.publicUrl || filePath };
+    },
+
+    /** Delete a file from user-documents bucket */
+    async delete(filePath) {
+      const { error } = await supabase.storage
+        .from('user-documents')
+        .remove([filePath]);
+      if (error) throw new Error(error.message);
+    },
+
+    /** Get a signed URL for private file access (valid 1 hour) */
+    async getSignedUrl(filePath) {
+      const { data, error } = await supabase.storage
+        .from('user-documents')
+        .createSignedUrl(filePath, 3600);
+      if (error) throw new Error(error.message);
+      return data.signedUrl;
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // ROUND WORKFLOW HELPERS — manage dispute round progression
+  // ---------------------------------------------------------------------------
+  const rounds = {
+    /**
+     * Mark a dispute as sent (starts the 30-day FCRA clock).
+     * Called after a letter for the current round is mailed.
+     */
+    async markSent(disputeId) {
+      const now = new Date();
+      const dueDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      const { data, error } = await supabase.from('disputes').update({
+        round_status: 'awaiting_response',
+        sent_at: now.toISOString(),
+        response_due_date: dueDate.toISOString()
+      }).eq('id', disputeId).select().single();
+      if (error) throw new Error(error.message);
+      return data;
+    },
+
+    /**
+     * Upload a bureau response for the current round.
+     * @param {string} disputeId
+     * @param {File} file - photo/PDF of bureau response
+     * @returns {Promise<{dispute, analysis}>} updated dispute + OCR analysis result
+     */
+    async uploadResponse(disputeId, file) {
+      // 1. Upload file to storage
+      const { path, url } = await storage.upload(file, 'responses');
+
+      // 2. Get current dispute state
+      const dispute = await db.disputes.get(disputeId);
+      const round = dispute.current_round;
+
+      // 3. Send to analyze Edge Function for OCR/vision processing
+      const analysis = await api.analyze({
+        type: 'analyze_response',
+        fileUrl: url,
+        filePath: path,
+        disputeId: disputeId,
+        round: round
+      });
+
+      // 4. Update dispute with response data
+      const roundPrefix = `round${round}`;
+      const updateFields = {
+        [`${roundPrefix}_response_text`]: analysis.extracted_text || '',
+        [`${roundPrefix}_response_file_url`]: url,
+        [`${roundPrefix}_response_confidence`]: analysis.confidence || 0,
+        round_status: 'response_received'
+      };
+
+      const { data: updated, error } = await supabase.from('disputes')
+        .update(updateFields)
+        .eq('id', disputeId)
+        .select().single();
+      if (error) throw new Error(error.message);
+
+      // 5. Create a round_bundle asset for archival
+      const user = await auth.getUser();
+      await supabase.from('assets').insert({
+        user_id: user.id,
+        type: 'round_bundle',
+        file_url: url,
+        file_name: file.name,
+        file_type: file.type,
+        file_size: file.size,
+        related_dispute_id: disputeId,
+        related_round: round,
+        metadata: {
+          response_text: analysis.extracted_text,
+          confidence: analysis.confidence,
+          uploaded_at: new Date().toISOString()
+        }
+      });
+
+      return { dispute: updated, analysis };
+    },
+
+    /**
+     * Complete the current round and advance to the next.
+     * If round 3 is completed, marks the dispute as fully complete.
+     */
+    async completeRound(disputeId) {
+      const dispute = await db.disputes.get(disputeId);
+      const round = dispute.current_round;
+
+      const roundPrefix = `round${round}`;
+      const updateFields = {
+        [`${roundPrefix}_completed_at`]: new Date().toISOString()
+      };
+
+      if (round < 3) {
+        // Advance to next round
+        updateFields.current_round = round + 1;
+        updateFields.round_status = 'drafted';
+        updateFields.response_due_date = null;
+        updateFields.sent_at = null;
+      } else {
+        // Round 3 complete — dispute fully processed
+        updateFields.round_status = 'complete';
+        updateFields.status = 'resolved';
+      }
+
+      const { data, error } = await supabase.from('disputes')
+        .update(updateFields)
+        .eq('id', disputeId)
+        .select().single();
+      if (error) throw new Error(error.message);
+      return data;
+    },
+
+    /**
+     * Get days remaining until FCRA deadline for a dispute.
+     * Returns negative number if overdue.
+     */
+    getDaysRemaining(dispute) {
+      if (!dispute.response_due_date) return null;
+      const due = new Date(dispute.response_due_date);
+      const now = new Date();
+      return Math.ceil((due - now) / (1000 * 60 * 60 * 24));
+    },
+
+    /**
+     * Check if a dispute's FCRA deadline has passed.
+     */
+    isOverdue(dispute) {
+      const days = this.getDaysRemaining(dispute);
+      return days !== null && days < 0;
     }
   };
 
@@ -349,5 +567,7 @@
   window.cai.auth = auth;
   window.cai.api = api;
   window.cai.db = db;
+  window.cai.storage = storage;
+  window.cai.rounds = rounds;
 
 })();

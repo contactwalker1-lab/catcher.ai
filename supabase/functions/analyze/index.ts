@@ -72,10 +72,10 @@ serve(async (req: Request) => {
 
     // 3. Parse request body
     const body = await req.json()
-    const { type, reportText, disputeData, round, profileJson } = body
+    const { type, reportText, disputeData, round, profileJson, fileUrl, filePath, disputeId } = body
 
-    if (!type || !['analyze', 'letter'].includes(type)) {
-      return new Response(JSON.stringify({ error: 'Invalid type. Must be "analyze" or "letter".' }), {
+    if (!type || !['analyze', 'letter', 'analyze_response'].includes(type)) {
+      return new Response(JSON.stringify({ error: 'Invalid type. Must be "analyze", "letter", or "analyze_response".' }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
@@ -138,7 +138,73 @@ The letter should be formal, reference specific laws, and be ready to print and 
       userMessage = `Generate a Round ${letterRound} dispute letter for the following:\n\nCreditor: ${disputeData.creditor}\nBureau: ${disputeData.bureau}\nAccount: ${disputeData.account || 'N/A'}\nAmount: ${disputeData.amount || 'N/A'}\nIssue: ${disputeData.issue}\nApplicable Law: ${disputeData.law || 'FCRA Section 611'}${profileInfo}`
     }
 
+    // 4b. Handle analyze_response — OCR/vision processing of bureau response
+    let useVision = false
+    let imageUrl = ''
+
+    if (type === 'analyze_response') {
+      if (!fileUrl) {
+        return new Response(JSON.stringify({ error: 'fileUrl is required for type "analyze_response"' }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        })
+      }
+
+      useVision = true
+      imageUrl = fileUrl
+
+      systemPrompt = `You are an expert at reading and interpreting credit bureau response letters. You are analyzing a photograph or scan of a letter that a credit bureau (Equifax, Experian, or TransUnion) sent in response to a consumer's dispute.
+
+Your job:
+1. Extract ALL text from the document image as accurately as possible
+2. Identify the bureau that sent it
+3. Determine the outcome: was the dispute accepted (item removed/corrected), denied (verified as accurate), or partially resolved?
+4. Extract any specific reasons or explanations given
+5. Note the date of the response if visible
+6. Rate your confidence in the accuracy of your text extraction (0.0 to 1.0) — if the image is blurry, partial, or hard to read, rate lower
+
+Return ONLY valid JSON with this structure:
+{
+  "extracted_text": "full text of the letter as best you can read it",
+  "bureau": "Equifax" | "Experian" | "TransUnion" | "Unknown",
+  "outcome": "removed" | "corrected" | "verified_accurate" | "partially_resolved" | "unclear",
+  "reasons": "explanation or reasons given by the bureau",
+  "response_date": "date on the letter if visible, or null",
+  "confidence": 0.85,
+  "confidence_notes": "any issues with readability",
+  "actionable_for_next_round": true | false,
+  "next_round_strategy": "brief suggestion for what to emphasize in the next dispute round"
+}`
+
+      userMessage = `Please analyze this bureau response document and extract all information from it.${disputeId ? ` This is for dispute ID: ${disputeId}, Round ${round || 'unknown'}.` : ''}`
+    }
+
     // 5. Call Claude API
+    const messages: any[] = []
+    
+    if (useVision && imageUrl) {
+      // Vision request — send image URL for OCR/analysis
+      messages.push({
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'url',
+              url: imageUrl
+            }
+          },
+          {
+            type: 'text',
+            text: userMessage
+          }
+        ]
+      })
+    } else {
+      // Standard text request
+      messages.push({ role: 'user', content: userMessage })
+    }
+
     const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -150,7 +216,7 @@ The letter should be formal, reference specific laws, and be ready to print and 
         model: 'claude-sonnet-4-5-20250514',
         max_tokens: 4096,
         system: systemPrompt,
-        messages: [{ role: 'user', content: userMessage }]
+        messages
       })
     })
 
@@ -180,6 +246,40 @@ The letter should be formal, reference specific laws, and be ready to print and 
         // If parsing fails, return raw text wrapped in a structure
         parsed = { summary: responseText, items: [] }
       }
+
+      return new Response(JSON.stringify(parsed), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    } else if (type === 'analyze_response') {
+      // Parse the OCR/vision response — should be JSON with confidence flag
+      let parsed
+      try {
+        const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/) || 
+                          responseText.match(/```\s*([\s\S]*?)\s*```/)
+        const jsonStr = jsonMatch ? jsonMatch[1] : responseText
+        parsed = JSON.parse(jsonStr)
+      } catch {
+        // If Claude couldn't parse, return low confidence result
+        parsed = {
+          extracted_text: responseText,
+          bureau: 'Unknown',
+          outcome: 'unclear',
+          reasons: '',
+          response_date: null,
+          confidence: 0.3,
+          confidence_notes: 'Could not parse structured response from AI — raw text returned',
+          actionable_for_next_round: false,
+          next_round_strategy: 'Please review the response manually and try again with a clearer image.'
+        }
+      }
+
+      // Ensure confidence field exists
+      if (typeof parsed.confidence !== 'number') {
+        parsed.confidence = 0.5
+      }
+
+      // Flag low confidence for user review
+      parsed.needs_manual_review = parsed.confidence < 0.7
 
       return new Response(JSON.stringify(parsed), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
