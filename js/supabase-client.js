@@ -56,12 +56,12 @@
     /** Check subscription_status on profiles table; redirect if inactive */
     async requireSubscription() {
       const session = await this.requireAuth();
-      if (!session) return null;
+      // If requireAuth threw AUTH_REDIRECT, we won't reach here
 
       const status = await this.getSubscriptionStatus();
       if (!status || status === 'inactive' || status === 'canceled') {
-        window.location.href = 'paywall.html?reason=subscription';
-        return null;
+        window.location.replace('paywall.html?reason=subscription');
+        throw new Error('SUBSCRIPTION_REDIRECT');
       }
       return status;
     },

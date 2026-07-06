@@ -157,17 +157,22 @@ let S = {
   busy:false
 };
 
-// ─── AUTH CHECK ──────────────────────────────────────────────────────────────
+// ─── AUTH + SUBSCRIPTION CHECK ───────────────────────────────────────────────
 let session;
 try {
-  session = await window.cai.auth.requireAuth();
+  // requireSubscription checks BOTH session AND subscription_status.
+  // Redirects to paywall.html if not logged in.
+  // Redirects to paywall.html?reason=subscription if logged in but unpaid.
+  await window.cai.auth.requireSubscription();
+  session = await window.cai.auth.getSession();
 } catch(e) {
-  // AUTH_REDIRECT is expected when no session — requireAuth already redirected
   clearTimeout(authTimeout);
-  if (e.message !== 'AUTH_REDIRECT') {
-    console.error('[cai] Auth check failed:', e);
-    window.location.replace('paywall.html');
+  if (e.message === 'AUTH_REDIRECT' || e.message === 'SUBSCRIPTION_REDIRECT') {
+    // Expected — redirect already triggered
+    return;
   }
+  console.error('[cai] Auth/subscription check failed:', e);
+  window.location.replace('paywall.html');
   return;
 }
 if(!session) {
@@ -175,7 +180,7 @@ if(!session) {
   window.location.replace('paywall.html');
   return;
 }
-// Auth succeeded — cancel the fail-safe timeout
+// Auth + subscription succeeded — cancel the fail-safe timeout
 clearTimeout(authTimeout);
 
 // ─── LOAD ALL DATA ───────────────────────────────────────────────────────────
