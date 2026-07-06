@@ -46,8 +46,9 @@
     async requireAuth() {
       const session = await this.getSession();
       if (!session) {
-        window.location.href = 'paywall.html';
-        return null;
+        window.location.replace('paywall.html');
+        // Throw to prevent any calling code from continuing
+        throw new Error('AUTH_REDIRECT');
       }
       return session;
     },

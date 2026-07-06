@@ -116,6 +116,26 @@ tr:hover td{background:rgba(49,166,104,.03)}
 (async function(){
 'use strict';
 
+// ─── FAIL-SAFE AUTH GATE ─────────────────────────────────────────────────────
+// If anything goes wrong with the async auth check (script load failure, network
+// error, etc.), redirect to paywall after a timeout. This prevents fail-open.
+const authTimeout = setTimeout(function() {
+  // If we're still on this page after 5 seconds without auth completing, redirect
+  window.location.replace('paywall.html');
+}, 5000);
+
+try {
+  // Verify supabase-client loaded properly
+  if (!window.cai || !window.cai.auth || !window.cai.auth.requireAuth) {
+    throw new Error('Supabase client not initialized');
+  }
+} catch(e) {
+  console.error('[cai] Auth gate failed:', e);
+  clearTimeout(authTimeout);
+  window.location.replace('paywall.html');
+  return;
+}
+
 // ─── BUREAU ADDRESSES (constant) ─────────────────────────────────────────────
 const BUREAUS = {
   Equifax:{name:"Equifax Information Services LLC",street:"P.O. Box 740256",city:"Atlanta",state:"GA",zip:"30374"},
@@ -138,8 +158,25 @@ let S = {
 };
 
 // ─── AUTH CHECK ──────────────────────────────────────────────────────────────
-const session = await window.cai.auth.requireAuth();
-if(!session) return; // redirected to paywall
+let session;
+try {
+  session = await window.cai.auth.requireAuth();
+} catch(e) {
+  // AUTH_REDIRECT is expected when no session — requireAuth already redirected
+  clearTimeout(authTimeout);
+  if (e.message !== 'AUTH_REDIRECT') {
+    console.error('[cai] Auth check failed:', e);
+    window.location.replace('paywall.html');
+  }
+  return;
+}
+if(!session) {
+  clearTimeout(authTimeout);
+  window.location.replace('paywall.html');
+  return;
+}
+// Auth succeeded — cancel the fail-safe timeout
+clearTimeout(authTimeout);
 
 // ─── LOAD ALL DATA ───────────────────────────────────────────────────────────
 async function loadAll(){
