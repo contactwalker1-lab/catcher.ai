@@ -100,6 +100,8 @@ tr:hover td{background:rgba(49,166,104,.03)}
 .mb-20{margin-bottom:20px}
 .mt-12{margin-top:12px}
 .mt-20{margin-top:20px}
+.letter-content{background:#ffffff;color:#1a1a1a;font-family:'Times New Roman',Georgia,serif;font-size:13px;line-height:1.8;white-space:pre-wrap;border:1px solid #e0e0e0}
+@media print{.letter-content{background:#fff!important;color:#000!important;border:none;max-height:none!important;overflow:visible!important}}
 </style>
 
 </head>
@@ -153,6 +155,7 @@ let S = {
   letters:[],
   scores:[],
   addresses:[],
+  assets:[],
   loading:true,
   busy:false
 };
@@ -186,14 +189,15 @@ clearTimeout(authTimeout);
 // ─── LOAD ALL DATA ───────────────────────────────────────────────────────────
 async function loadAll(){
   try{
-    const [profile,reports,analyses,disputes,letters,scores,addresses] = await Promise.all([
+    const [profile,reports,analyses,disputes,letters,scores,addresses,assets] = await Promise.all([
       window.cai.db.profiles.get().catch(()=>({})),
       window.cai.db.reports.list().catch(()=>[]),
       window.cai.db.analyses.list().catch(()=>[]),
       window.cai.db.disputes.list().catch(()=>[]),
       window.cai.db.letters.list().catch(()=>[]),
       window.cai.db.scores.list().catch(()=>[]),
-      window.cai.db.addresses.list().catch(()=>[])
+      window.cai.db.addresses.list().catch(()=>[]),
+      window.cai.db.assets.list().catch(()=>[])
     ]);
     S.profile=profile||{};
     S.reports=reports||[];
@@ -202,6 +206,7 @@ async function loadAll(){
     S.letters=letters||[];
     S.scores=scores||[];
     S.addresses=addresses||[];
+    S.assets=assets||[];
   }catch(e){
     console.error('[cai] loadAll error:',e);
     notify('Failed to load data','error');
@@ -233,6 +238,7 @@ const NAV=[
   {id:'analysis',icon:'ti-file-analytics',label:'Analysis'},
   {id:'disputes',icon:'ti-gavel',label:'Disputes'},
   {id:'letters',icon:'ti-mail',label:'Letters'},
+  {id:'assets',icon:'ti-folder',label:'Assets'},
   {section:'TOOLS'},
   {id:'legal',icon:'ti-scale',label:'Legal Alerts'},
   {id:'profile',icon:'ti-user',label:'Profile'},
@@ -257,7 +263,7 @@ function renderSidebar(){
 
 function renderTopbar(){
   const tb=document.getElementById('topbar');
-  const titles={dashboard:'Dashboard',analysis:'Credit Analysis',disputes:'Dispute Manager',letters:'Letter Center',legal:'Legal Alerts',profile:'Your Profile',instructions:'How to Use',resources:'Resources',settings:'Settings'};
+  const titles={dashboard:'Dashboard',analysis:'Credit Analysis',disputes:'Dispute Manager',letters:'Letter Center',assets:'Assets',legal:'Legal Alerts',profile:'Your Profile',instructions:'How to Use',resources:'Resources',settings:'Settings'};
   tb.innerHTML=`<div id="tb-title">${titles[S.view]||'Catcher.AI'}</div><div id="tb-actions"><button class="btn btn-sm btn-secondary" onclick="window.cai.auth.signOut()"><i class="ti ti-logout"></i> Sign Out</button></div>`;
 }
 
@@ -272,6 +278,7 @@ function render(){
     case'analysis':c.innerHTML=pageAnalysis();break;
     case'disputes':c.innerHTML=pageDisputes();break;
     case'letters':c.innerHTML=pageLetters();break;
+    case'assets':c.innerHTML=pageAssets();break;
     case'legal':c.innerHTML=pageLegal();break;
     case'profile':c.innerHTML=pageProfile();break;
     case'instructions':c.innerHTML=pageInstructions();break;
@@ -368,14 +375,97 @@ function pageDisputes(){
     h+=`<div class="empty-state"><i class="ti ti-gavel"></i><div class="empty-title">No Disputes Yet</div><div class="empty-sub">Run an AI analysis on your credit report, or add a dispute manually.</div></div>`;
     return h;
   }
-  h+=`<div class="table-wrap"><table><tr><th>Creditor</th><th>Bureau</th><th>Issue</th><th>Status</th><th>Created</th><th>Actions</th></tr>`;
+
+  // Render each dispute as a card with round tracker
   S.disputes.forEach(d=>{
     const dt=d.created_at?new Date(d.created_at).toLocaleDateString():'—';
-    const badge=d.status==='resolved'?'badge-resolved':d.status==='sent'?'badge-blue':d.status==='escalated'?'badge-high':'badge-yellow';
-    h+=`<tr><td>${d.creditor||'—'}</td><td>${d.bureau||'—'}</td><td style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${d.issue||'—'}</td><td><span class="badge ${badge}">${d.status||'pending'}</span></td><td>${dt}</td>`;
-    h+=`<td><button class="btn btn-sm btn-secondary" data-gen-letter="${d.id}">Generate Letter</button> <button class="btn btn-sm btn-secondary" data-edit-dispute="${d.id}">Edit</button> <button class="btn btn-sm btn-danger" data-del-dispute="${d.id}">Del</button></td></tr>`;
+    const currentRound=d.current_round||1;
+    const roundStatus=d.round_status||'drafted';
+    const daysLeft=window.cai.rounds.getDaysRemaining(d);
+    const overdue=window.cai.rounds.isOverdue(d);
+
+    h+=`<div class="card" style="margin-bottom:16px">`;
+
+    // Header row
+    h+=`<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;gap:8px">`;
+    h+=`<div><strong style="font-size:16px">${escHtml(d.creditor||'—')}</strong><div style="font-size:12px;color:var(--text2);margin-top:3px">${escHtml(d.bureau||'—')} · ${escHtml(d.issue||'').slice(0,80)}${(d.issue||'').length>80?'...':''}</div></div>`;
+    h+=`<div style="display:flex;gap:6px">`;
+    h+=`<button class="btn btn-sm btn-secondary" data-edit-dispute="${d.id}"><i class="ti ti-pencil"></i></button>`;
+    h+=`<button class="btn btn-sm btn-danger" data-del-dispute="${d.id}"><i class="ti ti-trash"></i></button>`;
+    h+=`</div></div>`;
+
+    // Visual Round Tracker (3 steps)
+    h+=`<div style="display:flex;align-items:center;gap:4px;margin-bottom:16px">`;
+    for(let r=1;r<=3;r++){
+      let stepColor='var(--border)';
+      let stepBg='transparent';
+      let stepLabel='';
+      if(r<currentRound){
+        stepColor='var(--green)';stepBg='rgba(49,166,104,.15)';stepLabel='✓';
+      } else if(r===currentRound){
+        stepColor='#3b82f6';stepBg='rgba(59,130,246,.15)';
+        if(roundStatus==='complete') {stepColor='var(--green)';stepBg='rgba(49,166,104,.15)';stepLabel='✓';}
+        else if(roundStatus==='awaiting_response') stepLabel='⏳';
+        else if(roundStatus==='response_received') stepLabel='📬';
+        else stepLabel=r.toString();
+      } else {
+        stepLabel=r.toString();
+      }
+      h+=`<div style="display:flex;align-items:center;gap:4px">`;
+      h+=`<div style="width:32px;height:32px;border-radius:50%;border:2px solid ${stepColor};background:${stepBg};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:${stepColor}">${stepLabel}</div>`;
+      h+=`<span style="font-size:11px;color:var(--text2)">R${r}</span>`;
+      if(r<3) h+=`<div style="width:24px;height:2px;background:${r<currentRound?'var(--green)':'var(--border)'};margin:0 2px"></div>`;
+      h+=`</div>`;
+    }
+    h+=`</div>`;
+
+    // Status + FCRA Deadline
+    h+=`<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">`;
+    const statusBadge=roundStatus==='awaiting_response'?'badge-blue':roundStatus==='response_received'?'badge-green':roundStatus==='complete'?'badge-resolved':roundStatus==='sent'?'badge-blue':'badge-yellow';
+    h+=`<span class="badge ${statusBadge}">Round ${currentRound}: ${roundStatus.replace(/_/g,' ')}</span>`;
+
+    if(roundStatus==='awaiting_response' && daysLeft!==null){
+      if(overdue){
+        h+=`<span class="badge badge-high"><i class="ti ti-alert-triangle" style="font-size:11px"></i> Bureau missed deadline (${Math.abs(daysLeft)} days overdue)</span>`;
+      } else {
+        const urgencyColor=daysLeft<=7?'#ef4444':daysLeft<=14?'#f59e0b':'var(--text2)';
+        h+=`<span style="font-size:12px;color:${urgencyColor}"><i class="ti ti-clock" style="font-size:11px"></i> Response due: ${daysLeft} days left</span>`;
+      }
+    }
+    h+=`</div>`;
+
+    // Action buttons based on current round status
+    h+=`<div style="display:flex;gap:8px;flex-wrap:wrap">`;
+
+    if(roundStatus==='drafted'){
+      // Need to generate and send letter for this round
+      h+=`<button class="btn btn-sm btn-primary" data-gen-letter="${d.id}"><i class="ti ti-file-text"></i> Generate Round ${currentRound} Letter</button>`;
+    } else if(roundStatus==='awaiting_response'){
+      // Waiting for bureau response — show upload button
+      h+=`<button class="btn btn-sm btn-blue" data-upload-response="${d.id}"><i class="ti ti-camera"></i> Upload Bureau Response</button>`;
+    } else if(roundStatus==='response_received'){
+      // Response uploaded — show confidence and option to advance
+      const roundPrefix=`round${currentRound}`;
+      const confidence=d[`${roundPrefix}_response_confidence`];
+      const needsReview=confidence!==null && confidence<0.7;
+
+      if(needsReview){
+        h+=`<span class="badge badge-high"><i class="ti ti-alert-circle" style="font-size:11px"></i> Low confidence OCR — please review</span>`;
+      }
+
+      if(currentRound<3){
+        h+=`<button class="btn btn-sm btn-primary" data-advance-round="${d.id}"><i class="ti ti-arrow-right"></i> Generate Round ${currentRound+1} Letter</button>`;
+      } else {
+        h+=`<button class="btn btn-sm btn-secondary" data-complete-dispute="${d.id}"><i class="ti ti-check"></i> Complete All Rounds</button>`;
+      }
+    } else if(roundStatus==='complete'){
+      h+=`<div style="padding:10px 14px;border-radius:8px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);font-size:13px;color:#10b981;width:100%"><i class="ti ti-circle-check"></i> This item has completed all three dispute rounds. Additional escalation options are coming soon.</div>`;
+    }
+
+    h+=`</div>`;
+    h+=`</div>`;
   });
-  h+=`</table></div>`;
+
   return h;
 }
 
@@ -390,13 +480,74 @@ function pageLetters(){
     const dt=l.created_at?new Date(l.created_at).toLocaleDateString():'—';
     const mailBadge=l.mailed?`<span class="badge badge-green">Mailed</span>`:`<span class="badge badge-yellow">Not Mailed</span>`;
     h+=`<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div><strong>${l.creditor||'—'}</strong> — ${l.bureau||'—'} (Round ${l.round||1})</div><div>${mailBadge}</div></div>`;
-    h+=`<pre style="max-height:180px;overflow-y:auto;padding:12px;background:var(--bg3);border-radius:8px;margin-bottom:12px">${escHtml(l.text||'')}</pre>`;
+    h+=`<pre class="letter-content" style="max-height:180px;overflow-y:auto;padding:16px 20px;border-radius:8px;margin-bottom:12px">${escHtml(l.text||'')}</pre>`;
     h+=`<div style="display:flex;gap:8px;flex-wrap:wrap">`;
     if(!l.mailed) h+=`<button class="btn btn-sm btn-blue" data-mail-letter="${l.id}"><i class="ti ti-send"></i> Mail via USPS</button>`;
     if(l.tracking_id) h+=`<span style="font-size:12px;color:var(--text2)">Tracking: ${l.tracking_id}</span>`;
     h+=`<button class="btn btn-sm btn-secondary" data-copy-letter="${l.id}"><i class="ti ti-copy"></i> Copy</button>`;
     h+=`</div></div>`;
   });
+  return h;
+}
+
+
+// ─── PAGE: ASSETS ────────────────────────────────────────────────────────────
+function pageAssets(){
+  const idDocs = S.assets.filter(a => a.type === 'identity_document');
+  const addressDocs = S.assets.filter(a => a.type === 'proof_of_address');
+  const roundBundles = S.assets.filter(a => a.type === 'round_bundle');
+
+  let h=`<div class="page-header"><div><div class="page-title">Assets</div><div class="page-sub">Your documents and completed dispute records</div></div></div>`;
+
+  // Identity & Verification Documents
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-id"></i> Identity Documents</div>`;
+  h+=`<p style="font-size:13px;color:var(--text2);margin-bottom:16px">Upload your government ID and proof of address. These may be needed when disputing with bureaus.</p>`;
+
+  // ID documents list
+  if(idDocs.length){
+    h+=`<div class="table-wrap mb-12"><table><tr><th>File</th><th>Uploaded</th><th></th></tr>`;
+    idDocs.forEach(doc=>{
+      const dt=doc.created_at?new Date(doc.created_at).toLocaleDateString():'—';
+      h+=`<tr><td>${escHtml(doc.file_name||'Document')}</td><td>${dt}</td><td><button class="btn btn-sm btn-danger" data-del-asset="${doc.id}">Delete</button></td></tr>`;
+    });
+    h+=`</table></div>`;
+  } else {
+    h+=`<p style="font-size:12px;color:var(--text3);margin-bottom:12px">No ID document uploaded yet.</p>`;
+  }
+  h+=`<div style="margin-bottom:16px"><label class="label">Upload Government ID (photo/scan)</label><input type="file" id="upload-id-doc" accept="image/*,.pdf" style="font-size:13px;color:var(--text2)"/></div>`;
+
+  // Proof of address
+  h+=`<div class="card-title mt-20"><i class="ti ti-home"></i> Proof of Address</div>`;
+  if(addressDocs.length){
+    h+=`<div class="table-wrap mb-12"><table><tr><th>File</th><th>Uploaded</th><th></th></tr>`;
+    addressDocs.forEach(doc=>{
+      const dt=doc.created_at?new Date(doc.created_at).toLocaleDateString():'—';
+      h+=`<tr><td>${escHtml(doc.file_name||'Document')}</td><td>${dt}</td><td><button class="btn btn-sm btn-danger" data-del-asset="${doc.id}">Delete</button></td></tr>`;
+    });
+    h+=`</table></div>`;
+  } else {
+    h+=`<p style="font-size:12px;color:var(--text3);margin-bottom:12px">No proof of address uploaded yet.</p>`;
+  }
+  h+=`<div><label class="label">Upload Proof of Address (utility bill, bank statement, etc.)</label><input type="file" id="upload-address-doc" accept="image/*,.pdf" style="font-size:13px;color:var(--text2)"/></div>`;
+  h+=`</div>`;
+
+  // Round Bundles — completed dispute rounds
+  h+=`<div class="card"><div class="card-title"><i class="ti ti-archive"></i> Completed Dispute Rounds</div>`;
+  if(roundBundles.length){
+    h+=`<p style="font-size:13px;color:var(--text2);margin-bottom:16px">Archived records of letters sent and bureau responses received.</p>`;
+    h+=`<div class="table-wrap"><table><tr><th>Creditor</th><th>Bureau</th><th>Round</th><th>Date</th><th>Outcome</th></tr>`;
+    roundBundles.forEach(bundle=>{
+      const dt=bundle.created_at?new Date(bundle.created_at).toLocaleDateString():'—';
+      const meta=bundle.metadata||{};
+      const creditor=S.disputes.find(d=>d.id===bundle.related_dispute_id);
+      h+=`<tr><td>${escHtml(creditor?.creditor||'—')}</td><td>${escHtml(creditor?.bureau||'—')}</td><td>Round ${bundle.related_round||'?'}</td><td>${dt}</td><td>${escHtml(meta.outcome||'—')}</td></tr>`;
+    });
+    h+=`</table></div>`;
+  } else {
+    h+=`<p style="font-size:13px;color:var(--text2)">No completed rounds yet. Once you send a dispute letter and upload the bureau's response, it will be archived here automatically.</p>`;
+  }
+  h+=`</div>`;
+
   return h;
 }
 
@@ -600,6 +751,38 @@ function bindEvents(){
     btn.onclick=()=>showLetterModal(btn.dataset.genLetter);
   });
 
+  // Upload bureau response (round workflow)
+  document.querySelectorAll('[data-upload-response]').forEach(btn=>{
+    btn.onclick=()=>showResponseUploadModal(btn.dataset.uploadResponse);
+  });
+
+  // Advance to next round (after response received)
+  document.querySelectorAll('[data-advance-round]').forEach(btn=>{
+    btn.onclick=async()=>{
+      const disputeId=btn.dataset.advanceRound;
+      try{
+        notify('Completing round and preparing next letter...','warning');
+        await window.cai.rounds.completeRound(disputeId);
+        S.disputes=await window.cai.db.disputes.list();
+        notify('Round complete! Next round letter is ready to generate.','success');
+        render();
+      }catch(e){notify('Failed: '+e.message,'error');}
+    };
+  });
+
+  // Complete all rounds (after round 3 response)
+  document.querySelectorAll('[data-complete-dispute]').forEach(btn=>{
+    btn.onclick=async()=>{
+      const disputeId=btn.dataset.completeDispute;
+      try{
+        await window.cai.rounds.completeRound(disputeId);
+        S.disputes=await window.cai.db.disputes.list();
+        notify('All 3 rounds complete!');
+        render();
+      }catch(e){notify('Failed: '+e.message,'error');}
+    };
+  });
+
   // Edit dispute
   document.querySelectorAll('[data-edit-dispute]').forEach(btn=>{
     btn.onclick=()=>{
@@ -677,6 +860,62 @@ function bindEvents(){
         await window.cai.db.addresses.delete(btn.dataset.delAddr);
         S.addresses=await window.cai.db.addresses.list();
         notify('Address deleted');
+        render();
+      }catch(e){notify(e.message,'error');}
+    };
+  });
+
+  // --- ASSETS PAGE BINDINGS ---
+  // Upload ID document
+  const uploadIdDoc=document.getElementById('upload-id-doc');
+  if(uploadIdDoc) uploadIdDoc.onchange=async(e)=>{
+    const file=e.target.files[0];
+    if(!file) return;
+    try{
+      notify('Uploading ID document...','warning');
+      const {path,url}=await window.cai.storage.upload(file,'identity');
+      await window.cai.db.assets.create({
+        type:'identity_document',
+        file_url:url,
+        file_name:file.name,
+        file_type:file.type,
+        file_size:file.size
+      });
+      S.assets=await window.cai.db.assets.list();
+      notify('ID document uploaded');
+      render();
+    }catch(err){notify('Upload failed: '+err.message,'error');}
+  };
+
+  // Upload proof of address
+  const uploadAddrDoc=document.getElementById('upload-address-doc');
+  if(uploadAddrDoc) uploadAddrDoc.onchange=async(e)=>{
+    const file=e.target.files[0];
+    if(!file) return;
+    try{
+      notify('Uploading proof of address...','warning');
+      const {path,url}=await window.cai.storage.upload(file,'identity');
+      await window.cai.db.assets.create({
+        type:'proof_of_address',
+        file_url:url,
+        file_name:file.name,
+        file_type:file.type,
+        file_size:file.size
+      });
+      S.assets=await window.cai.db.assets.list();
+      notify('Proof of address uploaded');
+      render();
+    }catch(err){notify('Upload failed: '+err.message,'error');}
+  };
+
+  // Delete asset
+  document.querySelectorAll('[data-del-asset]').forEach(btn=>{
+    btn.onclick=async()=>{
+      if(!confirm('Delete this document?')) return;
+      try{
+        await window.cai.db.assets.delete(btn.dataset.delAsset);
+        S.assets=await window.cai.db.assets.list();
+        notify('Document deleted');
         render();
       }catch(e){notify(e.message,'error');}
     };
@@ -837,8 +1076,9 @@ function showLetterModal(disputeId){
         text:letterText,
         mailed:false
       });
-      // Update dispute status to sent
+      // Update dispute status — mark as sent with FCRA deadline
       await window.cai.db.disputes.update(dispute.id,{status:'sent'});
+      await window.cai.rounds.markSent(dispute.id);
       S.letters=await window.cai.db.letters.list();
       S.disputes=await window.cai.db.disputes.list();
       notify('Letter generated!');
@@ -920,6 +1160,67 @@ function showMailModal(letterId){
       statusEl.textContent='Error: '+e.message;
       document.getElementById('mm-send').disabled=false;
       notify('Mailing failed: '+e.message,'error');
+    }
+  };
+}
+
+
+// ─── MODAL: UPLOAD BUREAU RESPONSE ───────────────────────────────────────────
+function showResponseUploadModal(disputeId){
+  const dispute=S.disputes.find(d=>d.id===disputeId);
+  if(!dispute){notify('Dispute not found','error');return;}
+  const root=document.getElementById('modal-root');
+  root.innerHTML=`<div class="overlay" id="response-overlay"><div class="modal">
+    <div class="modal-title"><i class="ti ti-camera"></i> Upload Bureau Response</div>
+    <div class="modal-sub">Upload a photo or scan of the response letter from <strong>${escHtml(dispute.bureau)}</strong> regarding <strong>${escHtml(dispute.creditor)}</strong> (Round ${dispute.current_round||1})</div>
+    <div style="margin-bottom:16px;padding:14px;border-radius:8px;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.15);font-size:13px;color:#60a5fa">
+      <i class="ti ti-info-circle"></i> Take a clear photo of the full letter. Our AI will read and analyze it to determine the bureau's response and prepare your next steps.
+    </div>
+    <div class="mb-12">
+      <label class="label">Take Photo or Select File</label>
+      <input type="file" id="response-file-input" accept="image/*,.pdf" capture="environment" style="font-size:13px;color:var(--text2);width:100%"/>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" id="resp-cancel">Cancel</button><button class="btn btn-primary" id="resp-upload" disabled><i class="ti ti-upload"></i> Upload & Analyze</button></div>
+    <div id="resp-status" class="mt-12" style="font-size:13px;color:var(--text2)"></div>
+  </div></div>`;
+
+  const fileInput=document.getElementById('response-file-input');
+  const uploadBtn=document.getElementById('resp-upload');
+
+  fileInput.onchange=()=>{
+    uploadBtn.disabled=!fileInput.files[0];
+  };
+
+  document.getElementById('resp-cancel').onclick=()=>{root.innerHTML='';};
+  document.getElementById('response-overlay').onclick=e=>{if(e.target.id==='response-overlay')root.innerHTML='';};
+
+  uploadBtn.onclick=async()=>{
+    const file=fileInput.files[0];
+    if(!file){notify('Please select a file','error');return;}
+    const statusEl=document.getElementById('resp-status');
+    statusEl.textContent='Uploading and analyzing... this may take 30-60 seconds';
+    uploadBtn.disabled=true;
+    try{
+      const result=await window.cai.rounds.uploadResponse(disputeId,file);
+
+      // Check confidence
+      if(result.analysis && result.analysis.needs_manual_review){
+        statusEl.innerHTML='<span style="color:#f59e0b"><i class="ti ti-alert-triangle"></i> Low confidence read — please review the extracted text below and verify accuracy before proceeding.</span>';
+        statusEl.innerHTML+=`<pre style="margin-top:8px;max-height:120px;overflow-y:auto;padding:8px;background:var(--bg3);border-radius:6px;font-size:11px">${escHtml(result.analysis.extracted_text||'')}</pre>`;
+      } else {
+        statusEl.innerHTML=`<span style="color:var(--green)"><i class="ti ti-circle-check"></i> Response processed! Outcome: ${result.analysis?.outcome||'unknown'}</span>`;
+      }
+
+      // Refresh disputes
+      S.disputes=await window.cai.db.disputes.list();
+      S.assets=await window.cai.db.assets.list();
+
+      notify('Bureau response uploaded and analyzed!');
+      setTimeout(()=>{root.innerHTML='';render();},2000);
+    }catch(e){
+      statusEl.textContent='Error: '+e.message;
+      uploadBtn.disabled=false;
+      notify('Upload failed: '+e.message,'error');
     }
   };
 }
