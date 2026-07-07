@@ -1108,6 +1108,39 @@ function showMailModal(letterId){
   const fromState=prof.state||'';
   const fromZip=prof.zip||'';
 
+  // Check if user has ID and proof of address assets
+  const idDocs=S.assets.filter(a=>a.type==='identity_document');
+  const poaDocs=S.assets.filter(a=>a.type==='proof_of_address');
+  const hasId=idDocs.length>0;
+  const hasPoa=poaDocs.length>0;
+
+  // Build attachments section
+  let attachSection='';
+  attachSection+=`<div class="card-title" style="margin-top:16px"><i class="ti ti-paperclip"></i> Attachments (Optional)</div>`;
+  attachSection+=`<p style="font-size:12px;color:var(--text2);margin-bottom:12px">Include supporting documents with your dispute letter. Bureaus may require ID verification.</p>`;
+
+  if(hasId){
+    attachSection+=`<label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;background:rgba(49,166,104,.05);border:1px solid var(--border);margin-bottom:8px;cursor:pointer;font-size:13px">
+      <input type="checkbox" id="mm-attach-id" style="width:16px;height:16px;accent-color:var(--green)"/>
+      <div><strong style="color:var(--text)">Include copy of ID</strong><br/><span style="color:var(--text2);font-size:11px">${escHtml(idDocs[0].file_name||'Government ID')}</span></div>
+    </label>`;
+  } else {
+    attachSection+=`<div style="padding:10px 12px;border-radius:8px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);margin-bottom:8px;font-size:12px;color:#f59e0b">
+      <i class="ti ti-alert-triangle" style="font-size:11px"></i> No ID uploaded yet. <button class="link-btn" style="font-size:12px;color:#f59e0b;text-decoration:underline" id="mm-go-assets-id">Upload in Assets →</button>
+    </div>`;
+  }
+
+  if(hasPoa){
+    attachSection+=`<label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;background:rgba(49,166,104,.05);border:1px solid var(--border);margin-bottom:8px;cursor:pointer;font-size:13px">
+      <input type="checkbox" id="mm-attach-poa" style="width:16px;height:16px;accent-color:var(--green)"/>
+      <div><strong style="color:var(--text)">Include proof of address</strong><br/><span style="color:var(--text2);font-size:11px">${escHtml(poaDocs[0].file_name||'Proof of address')}</span></div>
+    </label>`;
+  } else {
+    attachSection+=`<div style="padding:10px 12px;border-radius:8px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);margin-bottom:8px;font-size:12px;color:#f59e0b">
+      <i class="ti ti-alert-triangle" style="font-size:11px"></i> No proof of address uploaded yet. <button class="link-btn" style="font-size:12px;color:#f59e0b;text-decoration:underline" id="mm-go-assets-poa">Upload in Assets →</button>
+    </div>`;
+  }
+
   root.innerHTML=`<div class="overlay" id="mail-overlay"><div class="modal">
     <div class="modal-title"><i class="ti ti-send"></i> Mail Letter via USPS</div>
     <div class="modal-sub">Send via USPS Certified Mail with Return Receipt</div>
@@ -1119,9 +1152,17 @@ function showMailModal(letterId){
     <div class="form-row"><div><label class="label">Name</label><input class="input" id="mm-to-name" value="${escAttr(bureau.name)}"/></div></div>
     <div class="mb-12"><label class="label">Street</label><input class="input" id="mm-to-street" value="${escAttr(bureau.street)}"/></div>
     <div class="form-row"><div><label class="label">City</label><input class="input" id="mm-to-city" value="${escAttr(bureau.city)}"/></div><div><label class="label">State</label><input class="input" id="mm-to-state" value="${escAttr(bureau.state)}" maxlength="2"/></div><div><label class="label">ZIP</label><input class="input" id="mm-to-zip" value="${escAttr(bureau.zip)}" maxlength="10"/></div></div>
+    ${attachSection}
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"><button class="btn btn-secondary" id="mm-cancel">Cancel</button><button class="btn btn-blue" id="mm-send"><i class="ti ti-send"></i> Send Certified Mail</button></div>
     <div id="mm-status" class="mt-12" style="font-size:13px;color:var(--text2)"></div>
   </div></div>`;
+
+  // Wire up "go to assets" links
+  const goAssetsId=document.getElementById('mm-go-assets-id');
+  if(goAssetsId) goAssetsId.onclick=()=>{root.innerHTML='';S.view='assets';render();};
+  const goAssetsPoa=document.getElementById('mm-go-assets-poa');
+  if(goAssetsPoa) goAssetsPoa.onclick=()=>{root.innerHTML='';S.view='assets';render();};
+
   document.getElementById('mm-cancel').onclick=()=>{root.innerHTML='';};
   document.getElementById('mail-overlay').onclick=e=>{if(e.target.id==='mail-overlay')root.innerHTML='';};
   document.getElementById('mm-send').onclick=async()=>{
@@ -1141,6 +1182,14 @@ function showMailModal(letterId){
     };
     if(!from.name||!from.street||!from.city||!from.state||!from.zip){notify('Complete your return address','error');return;}
     if(!to.name||!to.street||!to.city||!to.state||!to.zip){notify('Complete the recipient address','error');return;}
+
+    // Collect attachment selections
+    const attachId=document.getElementById('mm-attach-id')?.checked||false;
+    const attachPoa=document.getElementById('mm-attach-poa')?.checked||false;
+    const attachments=[];
+    if(attachId&&idDocs.length) attachments.push({type:'identity_document',file_url:idDocs[0].file_url,file_name:idDocs[0].file_name});
+    if(attachPoa&&poaDocs.length) attachments.push({type:'proof_of_address',file_url:poaDocs[0].file_url,file_name:poaDocs[0].file_name});
+
     const statusEl=document.getElementById('mm-status');
     statusEl.textContent='Sending...';
     document.getElementById('mm-send').disabled=true;
@@ -1149,8 +1198,21 @@ function showMailModal(letterId){
         letterId:letterId,
         from:from,
         to:to,
-        content:letter.text
+        content:letter.text,
+        attachments:attachments.length?attachments:undefined
       });
+
+      // Update letter record with attachment info if any were included
+      if(attachments.length){
+        await window.cai.db.letters.update(letterId,{
+          metadata:{
+            attachments_included:attachments.map(a=>a.type),
+            mailed_with_id:attachId,
+            mailed_with_poa:attachPoa
+          }
+        });
+      }
+
       // Update local state
       S.letters=await window.cai.db.letters.list();
       notify('Letter mailed! Tracking: '+(result.tracking_id||'pending'));
